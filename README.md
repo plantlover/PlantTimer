@@ -26,12 +26,10 @@ TODO:
 Most libraries can be installed from within the
 Arduino IDE with the library manager.
 
-External libraries:
-[1] Time 1.5.0: https://github.com/PaulStoffregen/Time
-[2] TimeAlarms 1.4.0: https://github.com/PaulStoffregen/TimeAlarms
-
-[3] OneWire 2.3.2: https://github.com/PaulStoffregen/OneWire
-[4] DS18B20 temperature conversion: https://github.com/milesburton/Arduino-Temperature-Control-Library
-
-[5] LiquidCrystal_I2C 1.1.2: https://github.com/fdebrabander/Arduino-LiquidCrystal-I2C-library
-[6] I2C GPIO Expander: https://github.com/sumotoy/gpio_expander
+External libraries used:
+- Time 1.5.0: https://github.com/PaulStoffregen/Time
+- TimeAlarms 1.4.0: https://github.com/PaulStoffregen/TimeAlarms
+- OneWire 2.3.2: https://github.com/PaulStoffregen/OneWire
+- DS18B20 temperature conversion: https://github.com/milesburton/Arduino-Temperature-Control-Library
+- LiquidCrystal_I2C 1.1.2: https://github.com/fdebrabander/Arduino-LiquidCrystal-I2C-library
+- I2C GPIO Expander: https://github.com/sumotoy/gpio_expander
