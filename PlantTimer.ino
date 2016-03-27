@@ -46,7 +46,7 @@
 #include <LiquidCrystal_I2C.h>
 #include <EEPROM.h>
 
-/* TODO: PCA9555 library broken: remove "../Wire/" from #include "Wire.h"
+/* TODO: PCA9555 library broken: remove "../../" from #include "Wire.h"
    Make compatible with library SoftwareWire
    remove "gpio" from method "gpioDigitalWrite" */
 #include <pca9555.h>
@@ -58,17 +58,19 @@
 #define PIN_ULTRASONIC_ECHO      // HC-SR04 distance sensor for water level, trigger pin
 
 /* Definition of I2C I/O expansion pins */
-#define PIN_AIR_OUTLET_THROTTLE 8 // Exhaust air fan - output pin HIGH means throttle down exhaust air fan
-#define PIN_PUMP_IRRIGATION 7     // Water pump (for hydro-system)
-#define PIN_PUMP_MEASUREMENT 6    // Circulation pump for taking pH- and EC-measurements
-#define PIN_LIGHT_1 5             // Grow
-#define PIN_LIGHT_2 4             // Bloom
-#define PIN_LIGHT_3 3             // 730 nm lights
-#define PIN_LIGHT_COOLER 2        // Cooling fan for LED
-#define PIN_AIR_CIRCULATION 1     // Circulation fans inside grow compartments
+#define PIN_AIR_OUTLET_THROTTLE 7 // Exhaust air fan - output pin HIGH means throttle down exhaust air fan
+#define PIN_PUMP_IRRIGATION 6     // Water pump (for hydro-system)
+#define PIN_PUMP_MEASUREMENT 5    // Circulation pump for taking pH- and EC-measurements
+#define PIN_LIGHT_1 4             // Grow
+#define PIN_LIGHT_2 3             // Bloom
+#define PIN_LIGHT_3 2             // 730 nm lights
+#define PIN_LIGHT_COOLER 1        // Cooling fan for LED
+#define PIN_AIR_CIRCULATION 0     // Circulation fans inside grow compartments
 
 #define LCD_COLUMNS 20  // Width of display
 #define LCD_ROWS 4      // Lines of display
+
+#define I2C_GPIO_OUTPUT_PINS 16 // Number of output pins the used I2C expander has
 
 /* Serial command headers */
 #define HEADER_TIMESET "T"
@@ -187,7 +189,7 @@ void setup() {
     I2C_IO.begin();
 
     // Set all IO ports of I2C expander to output and LOW
-    for (byte i = 0; i <= 15; i++) {
+    for (byte i = 0; i < I2C_GPIO_OUTPUT_PINS; i++) {
       I2C_IO.gpioPinMode(i, OUTPUT);
       I2C_IO.gpioDigitalWrite(i, LOW);
     }
