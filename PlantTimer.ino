@@ -3,38 +3,37 @@
     Functionalities:
     Use real-time clock (DS3231) to manage lighting,
     air and temperature of a plant growing environment
-    with 8x relay board connected via I2C gpio expander
-    and status display on 20x4 I2C LCD.
-    
+    with 8x relay board connected via I2C gpio expander.
+
     Programming is done via serial commands:
     T<unixtimestamp>; sets time
     B<unixtimestamp>; sets bloom lighting scheme start
-    
+
     Features completed:
     - Setting of time and bloom start by serial command
     - Growth light time scheme based output switching
     - Bloom light switching with daily time changes
-    
+    - 730 nm lighting for X minutes before and after
+      bloom light switch off
+
     TODO:
-    - 730 nm lighting
     - Temperature sensor identification
     - Temperature controlled exhaust fan throttle
     - Timed air circulation
     - MAX_BLOOM_DAYS is funky
-    - nicen LCD output
-    
-    Most libraries can be installed from within the
+    - Another Arduino for LCD display
+
+    All libraries can be installed from within the
     Arduino IDE with the library manager.
-    
+
+    Last compiled with Arduino IDE 1.6.8
+
     External libraries:
-    [1] Time 1.5.0: https://github.com/PaulStoffregen/Time
-    [2] TimeAlarms 1.4.0: https://github.com/PaulStoffregen/TimeAlarms
-    
-    [3] OneWire 2.3.2: https://github.com/PaulStoffregen/OneWire
-    [4] DS18B20 temperature conversion: https://github.com/milesburton/Arduino-Temperature-Control-Library
-    
-    [5] LiquidCrystal_I2C 1.1.2: https://github.com/fdebrabander/Arduino-LiquidCrystal-I2C-library
-    [6] I2C GPIO Expander: https://github.com/sumotoy/gpio_expander
+    - Time 1.5.0: https://github.com/PaulStoffregen/Time
+    - TimeAlarms 1.4.0: https://github.com/PaulStoffregen/TimeAlarms
+    - OneWire 2.3.2: https://github.com/PaulStoffregen/OneWire
+    - DallasTemperature 3.7.6: https://github.com/milesburton/Arduino-Temperature-Control-Library
+    - gpio_expander 0.8.3 (for PCA9555): https://github.com/sumotoy/gpio_expander
 */
 
 #include <Time.h>
@@ -43,10 +42,10 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <Wire.h>
-#include <LiquidCrystal_I2C.h>
 #include <EEPROM.h>
 
-/* TODO: PCA9555 library broken: remove "../../" from #include "Wire.h"
+/* TODO: PCA9555 library brokenin multiple ways:
+   remove "../../" from #include "Wire.h"
    Make compatible with library SoftwareWire
    remove "gpio" from method "gpioDigitalWrite" */
 #include <pca9555.h>
@@ -54,8 +53,6 @@
 /* Definition of Arduino pins */
 /* Not mentioned are A4, A5, because they're standard I2C used by Wire.h */
 #define PIN_ONEWIRE 6            // OneWire connection pin
-#define PIN_ULTRASONIC_TRIGGER   // HC-SR04 distance sensor for water level, trigger pin
-#define PIN_ULTRASONIC_ECHO      // HC-SR04 distance sensor for water level, trigger pin
 
 /* Definition of I2C I/O expansion pins */
 #define PIN_AIR_OUTLET_THROTTLE 7 // Exhaust air fan - output pin HIGH means throttle down exhaust air fan
@@ -77,7 +74,6 @@
 #define HEADER_BLOOMSTARTSET "B"
 
 /* Initialize I2C stuff, LCD and GPIO expander */
-LiquidCrystal_I2C LCD(0x27, LCD_COLUMNS, LCD_ROWS);
 pca9555 I2C_IO(0x20);
 
 /* Initialize OneWire and temperature sensors */
@@ -90,7 +86,7 @@ DallasTemperature tempSensors(&ow);
 uint8_t tempSensorAirCirculation[8] = { 0x28, 0x16, 0xA3, 0xAA, 0x04, 0x00, 0x00, 0xA6 };
 uint8_t tempSensorLight[8] = { 0x28, 0x16, 0xA3, 0xAA, 0x04, 0x00, 0x00, 0xAB };
 uint8_t tempSensorExhaustAir[8] = { 0x28, 0x16, 0xA3, 0xAA, 0x04, 0x00, 0x00, 0xAC };
-uint8_t tempSensorElectronics[8] = { 0x28, 0x16, 0xA3, 0xAA, 0x04, 0x00, 0x00, 0xAD };
+uint8_t tempSensorElectronics[8] = { 0x28, 0xB8, 0x75, 0xAA, 0x04, 0x00, 0x00, 0x2B };
 
 /* Light schemes in minutes */
 // Light1: Growth light (12+1 method)
@@ -110,15 +106,15 @@ byte growthLightStartTimeMinute = 20;
 // => 12 hours ON, 12 hours OFF, repeat
 // These numbers can be set freely, so for example a 23 hour day is possible.
 // Only ONE ON and ONE OFF period are possible (and make sense).
-int bloomLightScheme[2] = { 720, 720 };
+int bloomLightScheme[2] = { 840, 660 };
 
 // Daily reduce duration of daytime by X minutes after bloom day Y.
 // Set to 0 if unwanted.
-byte reductionOfDaytimeInMinutes = 2;
+byte reductionOfDaytimeInMinutes = 3;
 // Daily prolong duration of nighttime by X minutes every day
-byte prolongNighttimeInMinutes = 2;
+byte prolongNighttimeInMinutes = 0;
 // Start with day-length modifications at bloom day X
-byte startOfDaytimeReduction = 40;
+byte startOfDaytimeReduction = 10;
 
 // If bloom mode is not active, switch bloom light output according to growth light scheme
 bool switchBloomLightInGrowthSchemeIfNotInBloom = true;
@@ -142,17 +138,9 @@ boolean serialStringComplete = false;  // whether the string is complete
 
 byte bloomDayCounter = 0;  // is filled by calculating forwards from storedSettings.bloomStart
 bool bloomLightStatus = 0; // same as above
-long secondsToNextGrowthLightSwitch = 0; // same as above
+long secondsToNextGrowthLightSwitch = 0; // Calculated on startup to set first planned light switch
 long secondsToNextBloomLightSwitch = 0;  // same as above
-
-
-/* Content variable for LCD with 4 rows and 20 columns */
-char cLCDlines[LCD_ROWS][LCD_COLUMNS] = {
-  {"This text will show"},
-  {"up on boot.        "},
-  {"Later filled with  "},
-  {"content.           "}
-};
+long secondsToNextSleepLightSwitch = 0;  // same as above
 
 /* Data object for settings that will be stored in EEPROM */
 struct storedDataObject {
@@ -168,13 +156,16 @@ storedDataObject storedSettings;
 void setup() {
   // Open serial connection
   Serial.begin(9600);
-  // Reserve 200 bytes for the serialInputString
+  // Reserve 50 bytes for the serialInputString
   serialInputString.reserve(50);
 
   // Set up real-time clock connection to "Time" library
   setSyncProvider(RTC.get);
   setSyncInterval(1);
 
+  // Write current time into variable, because now() seems a lot of work behind the curtains
+  time_t timeNow = now();
+  
   // Only continue if RTC is working correctly
   if (timeStatus() == timeSet) {
     Serial.print("Time of startup: ");
@@ -183,7 +174,7 @@ void setup() {
     Serial.print(minute());
 
     Serial.print(" or ");
-    Serial.println(now());
+    Serial.println(timeNow);
 
     // Set up I2C GPIO expander
     I2C_IO.begin();
@@ -194,9 +185,6 @@ void setup() {
       I2C_IO.gpioDigitalWrite(i, LOW);
     }
 
-    // Set up LCD
-    LCD.begin();
-    LCD.backlight();
 
     // Fill storedSettings with data from EEPROM storage
     EEPROM.get(0, storedSettings);
@@ -233,14 +221,14 @@ void setup() {
     // Bloom light setup
     // Only set up bloom light scheme if bloomStart is set
     // and not in the future
-    if ((storedSettings.bloomStart > 0) && ((now() - storedSettings.bloomStart) > 0)) {
+    if ((storedSettings.bloomStart > 0) && ((timeNow - storedSettings.bloomStart) > 0)) {
       getBloomLightStatus();
 
       if (!bloomLightStatus) { // if current period is 0, turn on bloom light
         turnOnBloomLight();
-        Serial.print("Set up bloom light OFF in seconds: ");
+        Serial.print("Bloom light OFF in seconds: ");
         Serial.println(secondsToNextBloomLightSwitch);
-        Serial.print("Set up sleep light ON in seconds: ");
+        Serial.print("Sleep light ON in seconds: ");
         Serial.println(secondsToNextBloomLightSwitch - (sleepLightScheme[0] * SECS_PER_MIN));
       }
       else { // Light scheme period 1 means light is currently OFF
@@ -248,10 +236,16 @@ void setup() {
         Serial.print("Set up bloom light ON in seconds: ");
         Serial.println(secondsToNextBloomLightSwitch);
       }
+      // Check if sleep light should be on
+      if (getSleepLightStatus() == true) {
+        I2C_IO.gpioDigitalWrite(PIN_LIGHT_3, HIGH);
+        Alarm.timerOnce(secondsToNextSleepLightSwitch, turnOffSleepLight);
+      }
       Serial.print("Bloom day counter: ");
       Serial.println(bloomDayCounter);
     }
-      
+
+
     // Turn on irrigation
     turnOnIrrigation();
   }
@@ -267,15 +261,15 @@ void loop() {
 
   // If a serial command has been received completely
   if (serialStringComplete) {
-    serialInputString.replace(";", ""); // remove trailing comma
+    serialInputString.replace(";", ""); // remove trailing semicolon
 
-    // Set time
+    // Set time if serial string starts with defined HEADER_TIMESET (default 'T')
     if (serialInputString.startsWith(HEADER_TIMESET) == true) {
       serialInputString.replace(HEADER_TIMESET, "");
       setSerialTime(serialInputString.toInt());
     }
 
-    // Set bloom start time
+    // Set bloom start timestamp if serial string starts with defined HEADER_BLOOMSTARTSET (default 'B')
     else if (serialInputString.startsWith(HEADER_BLOOMSTARTSET) == true) {
       serialInputString.replace(HEADER_BLOOMSTARTSET, "");
       setBloomStart(serialInputString.toInt());
@@ -295,24 +289,26 @@ void loop() {
 // and looks for the current lighting period we're at
 void getGrowthLightPeriod() {
   // Create time element for Alarm setup of growth light
+  time_t timeNow = now();
   tmElements_t tm;
-  breakTime(now(), tm);
+  breakTime(timeNow, tm);
   tm.Hour = growthLightStartTimeHour;
   tm.Minute = growthLightStartTimeMinute;
   tm.Second = 0;
   unsigned long sumOfGrowthLightPeriods = makeTime(tm) - SECS_PER_DAY;
   byte count = 0;
+ 
 
   // Growth light timer setup
-  while (sumOfGrowthLightPeriods <= now()) {
+  while (sumOfGrowthLightPeriods <= timeNow) {
     sumOfGrowthLightPeriods += growthLightScheme[count] * SECS_PER_MIN;
-    if (sumOfGrowthLightPeriods <= now()) {  // If already past now(), don't count next light period
+    if (sumOfGrowthLightPeriods <= timeNow) {  // If already past now(), don't count next light period
       currentGrowthLightPeriod = count;
       if (count < GROWTH_LIGHT_PERIODS) count++;
       else count = 0;
     }
   }
-  secondsToNextGrowthLightSwitch = sumOfGrowthLightPeriods - now();
+  secondsToNextGrowthLightSwitch = sumOfGrowthLightPeriods - timeNow;
   currentGrowthLightPeriod = count;
   Serial.print("Current growth lighting period: ");
   Serial.println(currentGrowthLightPeriod);
@@ -322,11 +318,12 @@ void getGrowthLightPeriod() {
 // Sums up all nights and days including optional day-/nighttime duration modification
 // Calculates effective bloom days (since there might have been shorter-than-24-hour days)
 void getBloomLightStatus() {
+  time_t timeNow = now();
   unsigned long sumOfBloomLightPeriods = storedSettings.bloomStart;
 
-  while (sumOfBloomLightPeriods <= now()) {
+  while (sumOfBloomLightPeriods <= timeNow) {
     sumOfBloomLightPeriods += bloomLightScheme[bloomLightStatus] * SECS_PER_MIN;
-    if (sumOfBloomLightPeriods <= now()) { // If already past now(), don't count next light period
+    if (sumOfBloomLightPeriods <= timeNow) { // If already past now(), don't count next light period
       if (!bloomLightStatus) {
         bloomLightStatus = true;
         if (bloomDayCounter >= startOfDaytimeReduction) {
@@ -343,7 +340,32 @@ void getBloomLightStatus() {
     }
   }
 
-  secondsToNextBloomLightSwitch = sumOfBloomLightPeriods - now();
+  secondsToNextBloomLightSwitch = sumOfBloomLightPeriods - timeNow;
+}
+
+boolean getSleepLightStatus() {
+  time_t secondsSinceLastBloomLightSwitch;
+  
+  secondsSinceLastBloomLightSwitch = abs(secondsToNextBloomLightSwitch - (bloomLightScheme[bloomLightStatus] * SECS_PER_MIN));
+
+  // If shortly within bloom light OFF, turn on sleep light
+  if ((sleepLightScheme[0] * SECS_PER_MIN) < secondsToNextBloomLightSwitch) {
+    // set duration until sleep light will be turned OFF
+    secondsToNextSleepLightSwitch = secondsToNextBloomLightSwitch + (sleepLightScheme[1] * SECS_PER_MIN);
+    return true;
+  }
+  // If shortly after bloom light OFF, turn on sleep light too
+  else if ((sleepLightScheme[1] * SECS_PER_MIN) < secondsSinceLastBloomLightSwitch) {
+    // set duration until sleep light will be turned OFF
+    secondsToNextSleepLightSwitch = secondsSinceLastBloomLightSwitch + (sleepLightScheme[1] * SECS_PER_MIN);
+    return true;
+  }
+  // If in between bloom light periods, don't turn on sleep light
+  else {
+    // set duration until sleep light will be turned ON
+    secondsToNextSleepLightSwitch = secondsToNextBloomLightSwitch - (sleepLightScheme[0] * SECS_PER_MIN);
+    return false;
+  }
 }
 
 
@@ -351,11 +373,15 @@ void getBloomLightStatus() {
 void turnOnIrrigation() {
   I2C_IO.gpioDigitalWrite(PIN_PUMP_IRRIGATION, HIGH);
   Alarm.timerOnce(irrigationScheme[0], turnOffIrrigation);
+  Serial.print("Turned on irrigation at ");
+  Serial.println(now());
 }
 
 void turnOffIrrigation() {
   I2C_IO.gpioDigitalWrite(PIN_PUMP_IRRIGATION, LOW);
   Alarm.timerOnce(irrigationScheme[1], turnOnIrrigation);
+  Serial.print("Turned off irrigation at ");
+  Serial.println(now());
 }
 
 void turnOnGrowthLight() {
@@ -405,19 +431,13 @@ void turnOffBloomLight() {
 void turnOnSleepLight() {
   Serial.println("Turned on sleep light");
   I2C_IO.gpioDigitalWrite(PIN_LIGHT_3, HIGH);
-  Alarm.timerOnce(sleepLightScheme[0] + sleepLightScheme[1], turnOffSleepLight);
+  Alarm.timerOnce(secondsToNextSleepLightSwitch, turnOffSleepLight);
 }
 
 void turnOffSleepLight() {
   Serial.println("Turned off sleep light");
   I2C_IO.gpioDigitalWrite(PIN_LIGHT_3, LOW);
-}
-
-void refreshDisplay() {
-  for (int i = 0; i < LCD_ROWS; i++) {
-    LCD.setCursor(0, i);
-    LCD.print(cLCDlines[i]);
-  }
+  Alarm.timerOnce(secondsToNextSleepLightSwitch, turnOnSleepLight);
 }
 
 void printOneWireDevices() {
@@ -452,7 +472,7 @@ void printOneWireDevices() {
 // Sets the time of the RTC clock
 void setSerialTime(unsigned long timeInput) {
   #define MIN_TIME 1451606400UL // Jan 1 2016
-  
+
   if (timeInput >= MIN_TIME) { // check the integer is a valid time (greater than Jan 1 2013)
     Serial.print("Time before set to: ");
     Serial.println(now());
