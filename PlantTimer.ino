@@ -129,7 +129,7 @@ short sleepLightScheme[2] = { 10, 15 };
 
 /* Irrigation scheme in seconds */
 // => 0.5 minutes on, 10 minutes off, repeat
-unsigned long irrigationScheme[2] = { 30, 600 };
+unsigned long irrigationScheme[2] = { 30, 6000 };
 
 
 /* FROM HERE ON COMES SYSTEM STUFF */
@@ -165,6 +165,9 @@ void setup() {
 
   // Write current time into variable, because now() seems a lot of work behind the curtains
   time_t timeNow = now();
+
+  // Initialize temperature sensors
+  tempSensors.begin();
   
   // Only continue if RTC is working correctly
   if (timeStatus() == timeSet) {
@@ -241,10 +244,13 @@ void setup() {
         I2C_IO.gpioDigitalWrite(PIN_LIGHT_3, HIGH);
         Alarm.timerOnce(secondsToNextSleepLightSwitch, turnOffSleepLight);
       }
+      else {
+        Alarm.timerOnce(secondsToNextSleepLightSwitch, turnOnSleepLight);
+      }
       Serial.print("Bloom day counter: ");
       Serial.println(bloomDayCounter);
     }
-
+     Alarm.timerRepeat(5, printOneWireDevices);
 
     // Turn on irrigation
     turnOnIrrigation();
@@ -290,12 +296,12 @@ void loop() {
 void getGrowthLightPeriod() {
   // Create time element for Alarm setup of growth light
   time_t timeNow = now();
-  tmElements_t tm;
-  breakTime(timeNow, tm);
-  tm.Hour = growthLightStartTimeHour;
-  tm.Minute = growthLightStartTimeMinute;
-  tm.Second = 0;
-  unsigned long sumOfGrowthLightPeriods = makeTime(tm) - SECS_PER_DAY;
+  tmElements_t dailyGrowthLightStartTime;
+  breakTime(timeNow, dailyGrowthLightStartTime);
+  dailyGrowthLightStartTime.Hour = growthLightStartTimeHour;
+  dailyGrowthLightStartTime.Minute = growthLightStartTimeMinute;
+  dailyGrowthLightStartTime.Second = 0;
+  unsigned long sumOfGrowthLightPeriods = makeTime(dailyGrowthLightStartTime) - SECS_PER_DAY;
   byte count = 0;
  
 
@@ -310,8 +316,6 @@ void getGrowthLightPeriod() {
   }
   secondsToNextGrowthLightSwitch = sumOfGrowthLightPeriods - timeNow;
   currentGrowthLightPeriod = count;
-  Serial.print("Current growth lighting period: ");
-  Serial.println(currentGrowthLightPeriod);
 }
 
 // Counts forward from timestamp storedSettings.bloomStart
@@ -360,15 +364,13 @@ boolean getSleepLightStatus() {
     secondsToNextSleepLightSwitch = secondsSinceLastBloomLightSwitch + (sleepLightScheme[1] * SECS_PER_MIN);
     return true;
   }
-  // If in between bloom light periods, don't turn on sleep light
+  // If in between bloom light periods, don't turn on sleep light right now, but set duration until next turn ON
   else {
     // set duration until sleep light will be turned ON
     secondsToNextSleepLightSwitch = secondsToNextBloomLightSwitch - (sleepLightScheme[0] * SECS_PER_MIN);
     return false;
   }
 }
-
-
 
 void turnOnIrrigation() {
   I2C_IO.gpioDigitalWrite(PIN_PUMP_IRRIGATION, HIGH);
@@ -393,6 +395,7 @@ void turnOnGrowthLight() {
       Serial.print(" and bloom light");
     }
   }
+  getGrowthLightPeriod();
   Alarm.timerOnce(secondsToNextGrowthLightSwitch, turnOffGrowthLight);
   Serial.print(" at ");
   Serial.println(now());
@@ -407,6 +410,7 @@ void turnOffGrowthLight() {
       Serial.print(" and bloom light");
     }
   }
+  getGrowthLightPeriod();
   Alarm.timerOnce(secondsToNextGrowthLightSwitch, turnOnGrowthLight);
   Serial.print(" at ");
   Serial.println(now());
@@ -430,24 +434,47 @@ void turnOffBloomLight() {
 
 void turnOnSleepLight() {
   Serial.println("Turned on sleep light");
-  I2C_IO.gpioDigitalWrite(PIN_LIGHT_3, HIGH);
+  I2C_IO.gpioDigitalWrite(PIN_LIGHT_3, HIGH);  
+  getSleepLightStatus();
   Alarm.timerOnce(secondsToNextSleepLightSwitch, turnOffSleepLight);
 }
 
 void turnOffSleepLight() {
   Serial.println("Turned off sleep light");
-  I2C_IO.gpioDigitalWrite(PIN_LIGHT_3, LOW);
+  I2C_IO.gpioDigitalWrite(PIN_LIGHT_3, LOW);  
+  getSleepLightStatus();
   Alarm.timerOnce(secondsToNextSleepLightSwitch, turnOnSleepLight);
 }
 
 void printOneWireDevices() {
-  tempSensors.begin();
-  tempSensors.requestTemperatures();
   uint8_t address[8];
-  byte count = 0;
+  byte count = tempSensors.getDeviceCount();
 
+  // Read temperatures
+  tempSensors.requestTemperatures();
+  
+  Serial.print("Sensors found: ");
+  Serial.println(count);
+
+  for (byte i=0; i<count; i++) {
+    Serial.print("Sensor ");
+    Serial.print(i);
+    Serial.print(": ");
+    Serial.print(tempSensors.getTempCByIndex(i));
+    Serial.print(" at address ");
+    tempSensors.getAddress(address, i);
+    for (uint8_t i = 0; i < 8; i++) {
+        Serial.print("0x");
+        if (address[i] < 0x10) Serial.print("0");
+        Serial.print(address[i], HEX);
+        if (i != 7) Serial.print(", ");
+    }
+    Serial.println(" };");    
+  }
+  /*
+  getAddress
   if (ow.search(address)) {
-    Serial.print("Temp sensor found with ");
+    Serial.print("Sensor found with ");
     Serial.print(tempSensors.getTempCByIndex(count));
     Serial.print(" C at { ");
     // Search for OneWire temperature sensors, print if available
@@ -465,6 +492,7 @@ void printOneWireDevices() {
     Serial.print("Devices found: ");
     Serial.println(count);
   }
+  */
 }
 
 
