@@ -3,7 +3,7 @@
     Functionalities:
     Use real-time clock (DS3231) to manage lighting,
     air and temperature of a plant growing environment
-    with 8x relay board connected via I2C gpio expander.
+    with 8x relay board.
 
     Programming is done via serial commands:
     T<unixtimestamp>; sets time
@@ -15,10 +15,10 @@
     - Bloom light switching with daily time changes
     - 730 nm lighting for X minutes before and after
       bloom light switch off
+    - Temperature sensor identification
+    - Exhaust fan throttle if temperature is low enough
 
     TODO:
-    - Temperature sensor identification
-    - Temperature controlled exhaust fan throttle
     - Timed air circulation
     - MAX_BLOOM_DAYS is funky
     - Another Arduino for LCD display
@@ -33,7 +33,6 @@
     - TimeAlarms 1.4.0: https://github.com/PaulStoffregen/TimeAlarms
     - OneWire 2.3.2: https://github.com/PaulStoffregen/OneWire
     - DallasTemperature 3.7.6: https://github.com/milesburton/Arduino-Temperature-Control-Library
-    - gpio_expander 0.8.3 (for PCA9555): https://github.com/sumotoy/gpio_expander
 */
 
 #include <Time.h>
@@ -44,37 +43,25 @@
 #include <Wire.h>
 #include <EEPROM.h>
 
-/* TODO: PCA9555 library brokenin multiple ways:
-   remove "../../" from #include "Wire.h"
-   Make compatible with library SoftwareWire
-   remove "gpio" from method "gpioDigitalWrite" */
-#include <pca9555.h>
+// I2C GPIO expander with PCA9555 IC
+#include <clsPCA9555.h>
 
-/* Definition of Arduino pins */
+/* Definition of Arduino digital pins */
 /* Not mentioned are A4, A5, because they're standard I2C used by Wire.h */
-#define PIN_ONEWIRE 6            // OneWire connection pin
 
-/* Definition of I2C I/O expansion pins */
-#define PIN_AIR_OUTLET_THROTTLE 7 // Exhaust air fan - output pin HIGH means throttle down exhaust air fan
-#define PIN_PUMP_IRRIGATION 6     // Water pump (for hydro-system)
-#define PIN_PUMP_MEASUREMENT 5    // Circulation pump for taking pH- and EC-measurements
-#define PIN_LIGHT_1 4             // Grow
-#define PIN_LIGHT_2 3             // Bloom
-#define PIN_LIGHT_3 2             // 730 nm lights
-#define PIN_LIGHT_COOLER 1        // Cooling fan for LED
-#define PIN_AIR_CIRCULATION 0     // Circulation fans inside grow compartments
-
-#define LCD_COLUMNS 20  // Width of display
-#define LCD_ROWS 4      // Lines of display
-
-#define I2C_GPIO_OUTPUT_PINS 16 // Number of output pins the used I2C expander has
+#define PIN_ONEWIRE 10            // OneWire data pin, add 4k7 pullup resistor between DATA and +5V
+#define PIN_AIR_OUTLET_THROTTLE 9 // Relay IN8: Exhaust air fan - output pin HIGH means throttle down exhaust air fan
+#define PIN_PUMP_IRRIGATION 8     // Relay IN7: Water pump (for hydro-system)
+#define PIN_PUMP_MEASUREMENT 7    // Relay IN6: Circulation pump for taking pH- and EC-measurements
+#define PIN_LIGHT_1 6             // Relay IN5: Grow
+#define PIN_LIGHT_2 5             // Relay IN4: Bloom
+#define PIN_LIGHT_3 4             // Relay IN3: 730 nm lights
+#define PIN_LIGHT_COOLER 3        // Relay IN2: Cooling fan for LED
+#define PIN_AIR_CIRCULATION 2     // Relay IN1: Circulation fans inside grow compartments
 
 /* Serial command headers */
 #define HEADER_TIMESET "T"
 #define HEADER_BLOOMSTARTSET "B"
-
-/* Initialize I2C stuff, LCD and GPIO expander */
-pca9555 I2C_IO(0x20);
 
 /* Initialize OneWire and temperature sensors */
 OneWire ow(PIN_ONEWIRE);
@@ -84,8 +71,7 @@ DallasTemperature tempSensors(&ow);
    Don't worry if you don't know them yet, they will show up on serial port.
 */
 uint8_t tempSensorAirCirculation[8] = { 0x28, 0x16, 0xA3, 0xAA, 0x04, 0x00, 0x00, 0xA6 };
-uint8_t tempSensorLight[8] = { 0x28, 0x16, 0xA3, 0xAA, 0x04, 0x00, 0x00, 0xAB };
-uint8_t tempSensorExhaustAir[8] = { 0x28, 0x16, 0xA3, 0xAA, 0x04, 0x00, 0x00, 0xAC };
+uint8_t tempSensorLight[8] = { 0x28, 0xD2, 0x89, 0x2A, 0x04, 0x00, 0x00, 0x79 };
 uint8_t tempSensorElectronics[8] = { 0x28, 0xB8, 0x75, 0xAA, 0x04, 0x00, 0x00, 0x2B };
 
 /* Light schemes in minutes */
@@ -131,6 +117,11 @@ short sleepLightScheme[2] = { 10, 15 };
 // => 0.5 minutes on, 10 minutes off, repeat
 unsigned long irrigationScheme[2] = { 30, 6000 };
 
+// Exhaust fan temperature hysteresis
+// Turns exhaust fan to low if plant room temperature is below 24°C
+// Turns back to high at hysteresis value (+2 K = 26°C)
+int minRoomTemp = 24;
+int exhaustFanHysteresis = 2;
 
 /* FROM HERE ON COMES SYSTEM STUFF */
 String serialInputString = "";         // a string to hold incoming serial data
@@ -141,6 +132,8 @@ bool bloomLightStatus = 0; // same as above
 long secondsToNextGrowthLightSwitch = 0; // Calculated on startup to set first planned light switch
 long secondsToNextBloomLightSwitch = 0;  // same as above
 long secondsToNextSleepLightSwitch = 0;  // same as above
+
+bool fanThrottleActive = 0;
 
 /* Data object for settings that will be stored in EEPROM */
 struct storedDataObject {
@@ -155,7 +148,7 @@ storedDataObject storedSettings;
 // Startup routine
 void setup() {
   // Open serial connection
-  Serial.begin(9600);
+  Serial.begin(57600);
   // Reserve 50 bytes for the serialInputString
   serialInputString.reserve(50);
 
@@ -168,7 +161,13 @@ void setup() {
 
   // Initialize temperature sensors
   tempSensors.begin();
-  
+
+  // Set all IO ports of I2C expander to output and LOW
+  for (byte i = PIN_AIR_CIRCULATION; i <= PIN_AIR_OUTLET_THROTTLE; i++) {
+    pinMode(i, OUTPUT);
+    digitalWrite(i, HIGH);
+  }
+
   // Only continue if RTC is working correctly
   if (timeStatus() == timeSet) {
     Serial.print("Time of startup: ");
@@ -178,15 +177,6 @@ void setup() {
 
     Serial.print(" or ");
     Serial.println(timeNow);
-
-    // Set up I2C GPIO expander
-    I2C_IO.begin();
-
-    // Set all IO ports of I2C expander to output and LOW
-    for (byte i = 0; i < I2C_GPIO_OUTPUT_PINS; i++) {
-      I2C_IO.gpioPinMode(i, OUTPUT);
-      I2C_IO.gpioDigitalWrite(i, LOW);
-    }
 
 
     // Fill storedSettings with data from EEPROM storage
@@ -198,20 +188,17 @@ void setup() {
     // Find OneWire temperature sensors
     printOneWireDevices();
 
+    // Start the first calculation which light period we should be at now
+    getGrowthLightPeriod();
+
     /* TIMER SETUP
         ========
     */
-    // Refresh display every second
-    // Alarm.timerRepeat(1, refreshDisplay);
-
-    getGrowthLightPeriod();
 
     // if growth light period is even, means growth light should be on
     // => turn on growth light
     if ((currentGrowthLightPeriod & 1) == 0) {
       turnOnGrowthLight();
-      Serial.print("Set up growth light OFF in seconds: ");
-      Serial.println(secondsToNextGrowthLightSwitch);
     }
     // else if growth light period is odd
     // => set up next growth light ON event
@@ -241,7 +228,7 @@ void setup() {
       }
       // Check if sleep light should be on
       if (getSleepLightStatus() == true) {
-        I2C_IO.gpioDigitalWrite(PIN_LIGHT_3, HIGH);
+        digitalWrite(PIN_LIGHT_3, LOW);
         Alarm.timerOnce(secondsToNextSleepLightSwitch, turnOffSleepLight);
       }
       else {
@@ -250,7 +237,7 @@ void setup() {
       Serial.print("Bloom day counter: ");
       Serial.println(bloomDayCounter);
     }
-     Alarm.timerRepeat(5, printOneWireDevices);
+    Alarm.timerRepeat(5, printOneWireDevices);
 
     // Turn on irrigation
     turnOnIrrigation();
@@ -289,6 +276,20 @@ void loop() {
     serialInputString = "";
     serialStringComplete = false;
   }
+
+  // Exhaust fan throttle with hysteresis
+  if (tempSensors.getTempC(tempSensorAirCirculation) <= minRoomTemp && !fanThrottleActive) {
+    // Switch on throttle for exhaust fan -> reduce air volume
+    digitalWrite(PIN_AIR_OUTLET_THROTTLE, LOW);
+    fanThrottleActive = true;
+    Serial.println("Turned down fan");
+  }
+  else if (tempSensors.getTempC(tempSensorAirCirculation) > (minRoomTemp + exhaustFanHysteresis) && fanThrottleActive == true) {
+    digitalWrite(PIN_AIR_OUTLET_THROTTLE, HIGH);
+    fanThrottleActive = false;
+    Serial.println("Turned up fan");
+  }
+
 }
 
 // Counts forward from one day before the daily lighting scheme start
@@ -303,7 +304,7 @@ void getGrowthLightPeriod() {
   dailyGrowthLightStartTime.Second = 0;
   unsigned long sumOfGrowthLightPeriods = makeTime(dailyGrowthLightStartTime) - SECS_PER_DAY;
   byte count = 0;
- 
+
 
   // Growth light timer setup
   while (sumOfGrowthLightPeriods <= timeNow) {
@@ -349,7 +350,7 @@ void getBloomLightStatus() {
 
 boolean getSleepLightStatus() {
   time_t secondsSinceLastBloomLightSwitch;
-  
+
   secondsSinceLastBloomLightSwitch = abs(secondsToNextBloomLightSwitch - (bloomLightScheme[bloomLightStatus] * SECS_PER_MIN));
 
   // If shortly within bloom light OFF, turn on sleep light
@@ -373,25 +374,25 @@ boolean getSleepLightStatus() {
 }
 
 void turnOnIrrigation() {
-  I2C_IO.gpioDigitalWrite(PIN_PUMP_IRRIGATION, HIGH);
+  digitalWrite(PIN_PUMP_IRRIGATION, LOW);
   Alarm.timerOnce(irrigationScheme[0], turnOffIrrigation);
   Serial.print("Turned on irrigation at ");
   Serial.println(now());
 }
 
 void turnOffIrrigation() {
-  I2C_IO.gpioDigitalWrite(PIN_PUMP_IRRIGATION, LOW);
+  digitalWrite(PIN_PUMP_IRRIGATION, HIGH);
   Alarm.timerOnce(irrigationScheme[1], turnOnIrrigation);
   Serial.print("Turned off irrigation at ");
   Serial.println(now());
 }
 
 void turnOnGrowthLight() {
-  I2C_IO.gpioDigitalWrite(PIN_LIGHT_1, HIGH);
+  digitalWrite(PIN_LIGHT_1, LOW);
   Serial.print("Turned on growth light");
   if (switchBloomLightInGrowthSchemeIfNotInBloom) {
     if ((storedSettings.bloomStart == 0) || (now() < storedSettings.bloomStart)) {
-      I2C_IO.gpioDigitalWrite(PIN_LIGHT_2, HIGH);
+      digitalWrite(PIN_LIGHT_2, LOW);
       Serial.print(" and bloom light");
     }
   }
@@ -402,22 +403,25 @@ void turnOnGrowthLight() {
 }
 
 void turnOffGrowthLight() {
-  I2C_IO.gpioDigitalWrite(PIN_LIGHT_1, LOW);
+  digitalWrite(PIN_LIGHT_1, HIGH);
   Serial.print("Turned off growth light");
   if (switchBloomLightInGrowthSchemeIfNotInBloom) {
     if ((storedSettings.bloomStart == 0) || (now() < storedSettings.bloomStart)) {
-      I2C_IO.gpioDigitalWrite(PIN_LIGHT_2, LOW);
+      digitalWrite(PIN_LIGHT_2, HIGH);
       Serial.print(" and bloom light");
     }
   }
-  getGrowthLightPeriod();
-  Alarm.timerOnce(secondsToNextGrowthLightSwitch, turnOnGrowthLight);
   Serial.print(" at ");
   Serial.println(now());
+
+  getGrowthLightPeriod();
+  Alarm.timerOnce(secondsToNextGrowthLightSwitch, turnOnGrowthLight);
+  Serial.print("Set up growth light OFF in seconds: ");
+  Serial.println(secondsToNextGrowthLightSwitch);
 }
 
 void turnOnBloomLight() {
-  I2C_IO.gpioDigitalWrite(PIN_LIGHT_2, HIGH);
+  digitalWrite(PIN_LIGHT_2, LOW);
   Serial.println("Turned on bloom light");
   // calculate and set the next OFF-period
   getBloomLightStatus();
@@ -425,7 +429,7 @@ void turnOnBloomLight() {
 }
 
 void turnOffBloomLight() {
-  I2C_IO.gpioDigitalWrite(PIN_LIGHT_2, LOW);
+  digitalWrite(PIN_LIGHT_2, HIGH);
   Serial.println("Turned off bloom light");
   // calculate and set the next ON-period
   getBloomLightStatus();
@@ -434,14 +438,14 @@ void turnOffBloomLight() {
 
 void turnOnSleepLight() {
   Serial.println("Turned on sleep light");
-  I2C_IO.gpioDigitalWrite(PIN_LIGHT_3, HIGH);  
+  digitalWrite(PIN_LIGHT_3, LOW);
   getSleepLightStatus();
   Alarm.timerOnce(secondsToNextSleepLightSwitch, turnOffSleepLight);
 }
 
 void turnOffSleepLight() {
   Serial.println("Turned off sleep light");
-  I2C_IO.gpioDigitalWrite(PIN_LIGHT_3, LOW);  
+  digitalWrite(PIN_LIGHT_3, HIGH);
   getSleepLightStatus();
   Alarm.timerOnce(secondsToNextSleepLightSwitch, turnOnSleepLight);
 }
@@ -452,54 +456,32 @@ void printOneWireDevices() {
 
   // Read temperatures
   tempSensors.requestTemperatures();
-  
+
   Serial.print("Sensors found: ");
   Serial.println(count);
 
-  for (byte i=0; i<count; i++) {
+  for (byte i = 0; i < count; i++) {
     Serial.print("Sensor ");
     Serial.print(i);
     Serial.print(": ");
     Serial.print(tempSensors.getTempCByIndex(i));
-    Serial.print(" at address ");
+    Serial.print(" at address { ");
     tempSensors.getAddress(address, i);
     for (uint8_t i = 0; i < 8; i++) {
-        Serial.print("0x");
-        if (address[i] < 0x10) Serial.print("0");
-        Serial.print(address[i], HEX);
-        if (i != 7) Serial.print(", ");
+      Serial.print("0x");
+      if (address[i] < 0x10) Serial.print("0");
+      Serial.print(address[i], HEX);
+      if (i != 7) Serial.print(", ");
     }
-    Serial.println(" };");    
+    Serial.println(" };");
   }
-  /*
-  getAddress
-  if (ow.search(address)) {
-    Serial.print("Sensor found with ");
-    Serial.print(tempSensors.getTempCByIndex(count));
-    Serial.print(" C at { ");
-    // Search for OneWire temperature sensors, print if available
-    { count++;
-      uint8_t cAddress[8] = "0";
-      for (uint8_t i = 0; i < 8; i++) {
-        Serial.print("0x");
-        if (address[i] < 0x10) Serial.print("0");
-        Serial.print(address[i], HEX);
-        if (i != 7) Serial.print(", ");
-        cAddress[i] = (char)address[i];
-      }
-      Serial.println(" };");
-    } while (ow.search(address));
-    Serial.print("Devices found: ");
-    Serial.println(count);
-  }
-  */
 }
 
 
 // Called by serial command "T<unix timestamp;"
 // Sets the time of the RTC clock
 void setSerialTime(unsigned long timeInput) {
-  #define MIN_TIME 1451606400UL // Jan 1 2016
+#define MIN_TIME 1451606400UL // Jan 1 2016
 
   if (timeInput >= MIN_TIME) { // check the integer is a valid time (greater than Jan 1 2013)
     Serial.print("Time before set to: ");
@@ -524,7 +506,7 @@ void setBloomStart(time_t serialTimeInput) {
   unsigned long timeInput = serialTimeInput;
   long elapsedBloomSeconds = now() - timeInput;
   int elapsedBloomDays = elapsedDays(elapsedBloomSeconds);
-  #define MIN_TIME 1451606400UL // Jan 1 2016
+#define MIN_TIME 1451606400UL // Jan 1 2016
 
   if (timeInput >= MIN_TIME) { // check the integer is a valid time (greater than Jan 1 2016)
     if (elapsedBloomDays < MAX_BLOOM_DAYS) {   // check the set date is not more than MAX_BLOOM_DAYS in the past
@@ -536,6 +518,13 @@ void setBloomStart(time_t serialTimeInput) {
       Serial.println("Bloom days more than MAX_BLOOM_DAYS, disabling bloom start");
       storedSettings.bloomStart = 0;
     }
+    EEPROM.put(0, storedSettings);
+    EEPROM.get(0, storedSettings);
+    Serial.print("Bloom start now set to: ");
+    Serial.println(storedSettings.bloomStart);
+  }
+  else if (timeInput == 0) {
+    storedSettings.bloomStart = 0;
     EEPROM.put(0, storedSettings);
     EEPROM.get(0, storedSettings);
     Serial.print("Bloom start now set to: ");
