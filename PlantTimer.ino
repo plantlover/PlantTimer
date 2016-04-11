@@ -170,7 +170,7 @@ void setup() {
 
   // Only continue if RTC is working correctly
   if (timeStatus() == timeSet) {
-    Serial.print("Time of startup: ");
+    Serial.print(F("Time of startup: "));
     Serial.print(hour());
     Serial.print(":");
     Serial.print(minute());
@@ -237,7 +237,12 @@ void setup() {
       Serial.print("Bloom day counter: ");
       Serial.println(bloomDayCounter);
     }
-    Alarm.timerRepeat(5, printOneWireDevices);
+    
+    // Request reading of temperatures on OneWire bus every 5 seconds
+    Alarm.timerRepeat(5, requestOneWireTemperatures);
+    
+    // Print all OneWire temperature sensors every 180 seconds
+    Alarm.timerRepeat(180, printOneWireDevices);
 
     // Turn on irrigation
     turnOnIrrigation();
@@ -284,7 +289,7 @@ void loop() {
     fanThrottleActive = true;
     Serial.println("Turned down fan");
   }
-  else if (tempSensors.getTempC(tempSensorAirCirculation) > (minRoomTemp + exhaustFanHysteresis) && fanThrottleActive == true) {
+  else if ((tempSensors.getTempC(tempSensorAirCirculation) > (minRoomTemp + exhaustFanHysteresis)) && fanThrottleActive == true) {
     digitalWrite(PIN_AIR_OUTLET_THROTTLE, HIGH);
     fanThrottleActive = false;
     Serial.println("Turned up fan");
@@ -396,10 +401,13 @@ void turnOnGrowthLight() {
       Serial.print(" and bloom light");
     }
   }
-  getGrowthLightPeriod();
-  Alarm.timerOnce(secondsToNextGrowthLightSwitch, turnOffGrowthLight);
   Serial.print(" at ");
   Serial.println(now());
+
+  getGrowthLightPeriod();
+  Alarm.timerOnce(secondsToNextGrowthLightSwitch, turnOffGrowthLight);
+  Serial.print("Set up growth light OFF in seconds: ");
+  Serial.println(secondsToNextGrowthLightSwitch);
 }
 
 void turnOffGrowthLight() {
@@ -416,7 +424,7 @@ void turnOffGrowthLight() {
 
   getGrowthLightPeriod();
   Alarm.timerOnce(secondsToNextGrowthLightSwitch, turnOnGrowthLight);
-  Serial.print("Set up growth light OFF in seconds: ");
+  Serial.print("Set up growth light ON in seconds: ");
   Serial.println(secondsToNextGrowthLightSwitch);
 }
 
@@ -450,12 +458,16 @@ void turnOffSleepLight() {
   Alarm.timerOnce(secondsToNextSleepLightSwitch, turnOnSleepLight);
 }
 
+void requestOneWireTemperatures() {
+  tempSensors.requestTemperatures();
+}
+
 void printOneWireDevices() {
   uint8_t address[8];
   byte count = tempSensors.getDeviceCount();
 
-  // Read temperatures
-  tempSensors.requestTemperatures();
+  // Read temperatures from devices
+  requestOneWireTemperatures();
 
   Serial.print("Sensors found: ");
   Serial.println(count);
