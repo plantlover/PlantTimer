@@ -175,14 +175,14 @@ void setup() {
     Serial.print(":");
     Serial.print(minute());
 
-    Serial.print(" or ");
+    Serial.print(F(" or "));
     Serial.println(timeNow);
 
 
     // Fill storedSettings with data from EEPROM storage
     EEPROM.get(0, storedSettings);
 
-    Serial.print("Bloom start: ");
+    Serial.print(F("Bloom start: "));
     Serial.println(storedSettings.bloomStart);
 
     // Find OneWire temperature sensors
@@ -204,7 +204,7 @@ void setup() {
     // => set up next growth light ON event
     else {
       Alarm.timerOnce(secondsToNextGrowthLightSwitch, turnOnGrowthLight);
-      Serial.print("Set up growth light ON in seconds: ");
+      Serial.print(F("Set up growth light ON in seconds: "));
       Serial.println(secondsToNextGrowthLightSwitch);
     }
 
@@ -216,14 +216,14 @@ void setup() {
 
       if (!bloomLightStatus) { // if current period is 0, turn on bloom light
         turnOnBloomLight();
-        Serial.print("Bloom light OFF in seconds: ");
+        Serial.print(F("Bloom light OFF in seconds: "));
         Serial.println(secondsToNextBloomLightSwitch);
-        Serial.print("Sleep light ON in seconds: ");
+        Serial.print(F("Sleep light ON in seconds: "));
         Serial.println(secondsToNextBloomLightSwitch - (sleepLightScheme[0] * SECS_PER_MIN));
       }
       else { // Light scheme period 1 means light is currently OFF
         Alarm.timerOnce(secondsToNextBloomLightSwitch, turnOnBloomLight);
-        Serial.print("Set up bloom light ON in seconds: ");
+        Serial.print(F("Set up bloom light ON in seconds: "));
         Serial.println(secondsToNextBloomLightSwitch);
       }
       // Check if sleep light should be on
@@ -234,7 +234,7 @@ void setup() {
       else {
         Alarm.timerOnce(secondsToNextSleepLightSwitch, turnOnSleepLight);
       }
-      Serial.print("Bloom day counter: ");
+      Serial.print(F("Bloom day counter: "));
       Serial.println(bloomDayCounter);
     }
     
@@ -248,7 +248,7 @@ void setup() {
     turnOnIrrigation();
   }
   else {
-    Serial.println("Fix the RTC!");
+    Serial.println(F("Fix the RTC!"));
   }
 }
 
@@ -274,7 +274,7 @@ void loop() {
     }
 
     else {
-      Serial.println("I don't understand what you're saying");
+      Serial.println(F("I don't understand what you're saying"));
     }
 
     // clear the string:
@@ -287,12 +287,12 @@ void loop() {
     // Switch on throttle for exhaust fan -> reduce air volume
     digitalWrite(PIN_AIR_OUTLET_THROTTLE, LOW);
     fanThrottleActive = true;
-    Serial.println("Turned down fan");
+    Serial.println(F("Turned down fan"));
   }
   else if ((tempSensors.getTempC(tempSensorAirCirculation) > (minRoomTemp + exhaustFanHysteresis)) && fanThrottleActive == true) {
     digitalWrite(PIN_AIR_OUTLET_THROTTLE, HIGH);
     fanThrottleActive = false;
-    Serial.println("Turned up fan");
+    Serial.println(F("Turned up fan"));
   }
 
 }
@@ -381,24 +381,24 @@ boolean getSleepLightStatus() {
 void turnOnIrrigation() {
   digitalWrite(PIN_PUMP_IRRIGATION, LOW);
   Alarm.timerOnce(irrigationScheme[0], turnOffIrrigation);
-  Serial.print("Turned on irrigation at ");
+  Serial.print(F("Turned on irrigation at "));
   Serial.println(now());
 }
 
 void turnOffIrrigation() {
   digitalWrite(PIN_PUMP_IRRIGATION, HIGH);
   Alarm.timerOnce(irrigationScheme[1], turnOnIrrigation);
-  Serial.print("Turned off irrigation at ");
+  Serial.print(F("Turned off irrigation at "));
   Serial.println(now());
 }
 
 void turnOnGrowthLight() {
   digitalWrite(PIN_LIGHT_1, LOW);
-  Serial.print("Turned on growth light");
+  Serial.print(F("Turned on growth light"));
   if (switchBloomLightInGrowthSchemeIfNotInBloom) {
     if ((storedSettings.bloomStart == 0) || (now() < storedSettings.bloomStart)) {
       digitalWrite(PIN_LIGHT_2, LOW);
-      Serial.print(" and bloom light");
+      Serial.print(F(" and bloom light"));
     }
   }
   Serial.print(" at ");
@@ -406,31 +406,31 @@ void turnOnGrowthLight() {
 
   getGrowthLightPeriod();
   Alarm.timerOnce(secondsToNextGrowthLightSwitch, turnOffGrowthLight);
-  Serial.print("Set up growth light OFF in seconds: ");
+  Serial.print(F("Set up growth light OFF in seconds: "));
   Serial.println(secondsToNextGrowthLightSwitch);
 }
 
 void turnOffGrowthLight() {
   digitalWrite(PIN_LIGHT_1, HIGH);
-  Serial.print("Turned off growth light");
+  Serial.print(F("Turned off growth light"));
   if (switchBloomLightInGrowthSchemeIfNotInBloom) {
     if ((storedSettings.bloomStart == 0) || (now() < storedSettings.bloomStart)) {
       digitalWrite(PIN_LIGHT_2, HIGH);
-      Serial.print(" and bloom light");
+      Serial.print(F(" and bloom light"));
     }
   }
-  Serial.print(" at ");
+  Serial.print(F(" at "));
   Serial.println(now());
 
   getGrowthLightPeriod();
   Alarm.timerOnce(secondsToNextGrowthLightSwitch, turnOnGrowthLight);
-  Serial.print("Set up growth light ON in seconds: ");
+  Serial.print(F("Set up growth light ON in seconds: "));
   Serial.println(secondsToNextGrowthLightSwitch);
 }
 
 void turnOnBloomLight() {
   digitalWrite(PIN_LIGHT_2, LOW);
-  Serial.println("Turned on bloom light");
+  Serial.println(F("Turned on bloom light"));
   // calculate and set the next OFF-period
   getBloomLightStatus();
   Alarm.timerOnce(secondsToNextBloomLightSwitch, turnOffBloomLight);
@@ -438,21 +438,21 @@ void turnOnBloomLight() {
 
 void turnOffBloomLight() {
   digitalWrite(PIN_LIGHT_2, HIGH);
-  Serial.println("Turned off bloom light");
+  Serial.println(F("Turned off bloom light"));
   // calculate and set the next ON-period
   getBloomLightStatus();
   Alarm.timerOnce(secondsToNextBloomLightSwitch, turnOnBloomLight);
 }
 
 void turnOnSleepLight() {
-  Serial.println("Turned on sleep light");
+  Serial.println(F("Turned on sleep light"));
   digitalWrite(PIN_LIGHT_3, LOW);
   getSleepLightStatus();
   Alarm.timerOnce(secondsToNextSleepLightSwitch, turnOffSleepLight);
 }
 
 void turnOffSleepLight() {
-  Serial.println("Turned off sleep light");
+  Serial.println(F("Turned off sleep light"));
   digitalWrite(PIN_LIGHT_3, HIGH);
   getSleepLightStatus();
   Alarm.timerOnce(secondsToNextSleepLightSwitch, turnOnSleepLight);
@@ -469,23 +469,23 @@ void printOneWireDevices() {
   // Read temperatures from devices
   requestOneWireTemperatures();
 
-  Serial.print("Sensors found: ");
+  Serial.print(F("Sensors found: "));
   Serial.println(count);
 
   for (byte i = 0; i < count; i++) {
-    Serial.print("Sensor ");
+    Serial.print(F("Sensor "));
     Serial.print(i);
-    Serial.print(": ");
+    Serial.print(F(": "));
     Serial.print(tempSensors.getTempCByIndex(i));
-    Serial.print(" at address { ");
+    Serial.print(F(" at address { "));
     tempSensors.getAddress(address, i);
     for (uint8_t i = 0; i < 8; i++) {
-      Serial.print("0x");
+      Serial.print(F("0x"));
       if (address[i] < 0x10) Serial.print("0");
       Serial.print(address[i], HEX);
-      if (i != 7) Serial.print(", ");
+      if (i != 7) Serial.print(F(", "));
     }
-    Serial.println(" };");
+    Serial.println(F(" };"));
   }
 }
 
@@ -496,19 +496,19 @@ void setSerialTime(unsigned long timeInput) {
 #define MIN_TIME 1451606400UL // Jan 1 2016
 
   if (timeInput >= MIN_TIME) { // check the integer is a valid time (greater than Jan 1 2013)
-    Serial.print("Time before set to: ");
+    Serial.print(F("Time before set to: "));
     Serial.println(now());
     setTime(timeInput); // Sync Arduino clock to the time received on the serial port
     RTC.set(timeInput); // set the RTC and the system time to the received value
-    Serial.print("Time now set to: ");
+    Serial.print(F("Time now set to: "));
     Serial.println(now());
   }
   else if (!timeInput) {
-    Serial.print("Current timestamp: ");
+    Serial.print(F("Current timestamp: "));
     Serial.println(now());
   }
   else {
-    Serial.print("Not a valid unix timestamp. Use \"date +T%s\" in your shell to get a useful timeset command.");
+    Serial.print(F("Not a valid unix timestamp. Use \"date +T%s\" in your shell to get a useful timeset command."));
   }
 }
 
@@ -522,29 +522,29 @@ void setBloomStart(time_t serialTimeInput) {
 
   if (timeInput >= MIN_TIME) { // check the integer is a valid time (greater than Jan 1 2016)
     if (elapsedBloomDays < MAX_BLOOM_DAYS) {   // check the set date is not more than MAX_BLOOM_DAYS in the past
-      Serial.print("Bloom start before set: ");
+      Serial.print(F("Bloom start before set: "));
       Serial.println(storedSettings.bloomStart);
       storedSettings.bloomStart = timeInput;
     }
     else {  // if the desired bloom start day is more than MAX_BLOOM_DAYS in the past, set to 0 and thus disable bloom light scheme
-      Serial.println("Bloom days more than MAX_BLOOM_DAYS, disabling bloom start");
+      Serial.println(F("Bloom days more than MAX_BLOOM_DAYS, disabling bloom start"));
       storedSettings.bloomStart = 0;
     }
     EEPROM.put(0, storedSettings);
     EEPROM.get(0, storedSettings);
-    Serial.print("Bloom start now set to: ");
+    Serial.print(F("Bloom start now set to: "));
     Serial.println(storedSettings.bloomStart);
   }
   else if (timeInput == 0) {
     storedSettings.bloomStart = 0;
     EEPROM.put(0, storedSettings);
     EEPROM.get(0, storedSettings);
-    Serial.print("Bloom start now set to: ");
+    Serial.print(F("Bloom start now set to: "));
     Serial.println(storedSettings.bloomStart);
   }
   else if (!timeInput) {
-    Serial.println("Not a valid unix timestamp. Use \"date +T%s\" in your shell to get a useful timeset command.");
-    Serial.print("Bloom start currently set to: ");
+    Serial.println(F("Not a valid unix timestamp. Use \"date +T%s\" in your shell to get a useful timeset command."));
+    Serial.print(F("Bloom start currently set to: "));
     Serial.println(storedSettings.bloomStart);
   }
 }
