@@ -304,19 +304,22 @@ void getGrowthLightPeriod() {
   time_t timeNow = now();
   tmElements_t dailyGrowthLightStartTime;
   breakTime(timeNow, dailyGrowthLightStartTime);
+  // Modify time element with variable start time (default: 16:20)
   dailyGrowthLightStartTime.Hour = growthLightStartTimeHour;
   dailyGrowthLightStartTime.Minute = growthLightStartTimeMinute;
   dailyGrowthLightStartTime.Second = 0;
+
+  // Subtract one day from growth light start time
+  // Set up variable to count through growth light periods
   unsigned long sumOfGrowthLightPeriods = makeTime(dailyGrowthLightStartTime) - SECS_PER_DAY;
   byte count = 0;
 
-
-  // Growth light timer setup
+  // Comb through on/off periods since one day earlier until we know which lighting period we're at now
   while (sumOfGrowthLightPeriods <= timeNow) {
     sumOfGrowthLightPeriods += growthLightScheme[count] * SECS_PER_MIN;
     if (sumOfGrowthLightPeriods <= timeNow) {  // If already past now(), don't count next light period
       currentGrowthLightPeriod = count;
-      if (count < GROWTH_LIGHT_PERIODS) count++;
+      if (count < GROWTH_LIGHT_PERIODS-1) count++;
       else count = 0;
     }
   }
