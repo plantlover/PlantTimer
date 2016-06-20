@@ -43,9 +43,6 @@
 #include <Wire.h>
 #include <EEPROM.h>
 
-// I2C GPIO expander with PCA9555 IC
-#include <clsPCA9555.h>
-
 /* Definition of Arduino digital pins */
 /* Not mentioned are A4, A5, because they're standard I2C used by Wire.h */
 
@@ -63,6 +60,10 @@
 #define HEADER_TIMESET "T"
 #define HEADER_BLOOMSTARTSET "B"
 
+/* 8-relay-board needs HIGH to OPEN the relay, so for readability, we redefine the use of HIGH/LOW */
+#define RELAYON LOW
+#define RELAYOFF HIGH
+
 /* Initialize OneWire and temperature sensors */
 OneWire ow(PIN_ONEWIRE);
 DallasTemperature tempSensors(&ow);
@@ -71,8 +72,8 @@ DallasTemperature tempSensors(&ow);
    Don't worry if you don't know them yet, they will show up on serial port.
 */
 uint8_t tempSensorAirCirculation[8] = { 0x28, 0x16, 0xA3, 0xAA, 0x04, 0x00, 0x00, 0xA6 };
-uint8_t tempSensorLight[8] = { 0x28, 0xD2, 0x89, 0x2A, 0x04, 0x00, 0x00, 0x79 };
-uint8_t tempSensorElectronics[8] = { 0x28, 0xB8, 0x75, 0xAA, 0x04, 0x00, 0x00, 0x2B };
+uint8_t tempSensorLight[8]          = { 0x28, 0xD2, 0x89, 0x2A, 0x04, 0x00, 0x00, 0x79 };
+uint8_t tempSensorElectronics[8]    = { 0x28, 0xB8, 0x75, 0xAA, 0x04, 0x00, 0x00, 0x2B };
 
 /* Light schemes in minutes */
 // Light1: Growth light (12+1 method)
@@ -92,7 +93,7 @@ byte growthLightStartTimeMinute = 20;
 // => 12 hours ON, 12 hours OFF, repeat
 // These numbers can be set freely, so for example a 23 hour day is possible.
 // Only ONE ON and ONE OFF period are possible (and make sense).
-int bloomLightScheme[2] = { 840, 660 };
+int bloomLightScheme[2] = { 780, 690 };
 
 // Daily reduce duration of daytime by X minutes after bloom day Y.
 // Set to 0 if unwanted.
@@ -115,12 +116,12 @@ short sleepLightScheme[2] = { 10, 15 };
 
 /* Irrigation scheme in seconds */
 // => 0.5 minutes on, 10 minutes off, repeat
-unsigned long irrigationScheme[2] = { 30, 6000 };
+unsigned long irrigationScheme[2] = { 40, 500 };
 
 // Exhaust fan temperature hysteresis
-// Turns exhaust fan to low if plant room temperature is below 24°C
-// Turns back to high at hysteresis value (+2 K = 26°C)
-int minRoomTemp = 24;
+// Turns exhaust fan to low if plant room temperature is below 23°C
+// Turns back to high at hysteresis value (+2 K = 25°C)
+int minRoomTemp = 23;
 int exhaustFanHysteresis = 2;
 
 /* FROM HERE ON COMES SYSTEM STUFF */
@@ -147,6 +148,12 @@ storedDataObject storedSettings;
 
 // Startup routine
 void setup() {
+  // Set up output pins for relay switching
+  for (int pin=2; pin < 9; pin++) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, HIGH);
+  }
+  
   // Open serial connection
   Serial.begin(57600);
   // Reserve 50 bytes for the serialInputString
@@ -161,12 +168,6 @@ void setup() {
 
   // Initialize temperature sensors
   tempSensors.begin();
-
-  // Set all IO ports of I2C expander to output and LOW
-  for (byte i = PIN_AIR_CIRCULATION; i <= PIN_AIR_OUTLET_THROTTLE; i++) {
-    pinMode(i, OUTPUT);
-    digitalWrite(i, HIGH);
-  }
 
   // Only continue if RTC is working correctly
   if (timeStatus() == timeSet) {
@@ -204,7 +205,7 @@ void setup() {
     // => set up next growth light ON event
     else {
       Alarm.timerOnce(secondsToNextGrowthLightSwitch, turnOnGrowthLight);
-      Serial.print(F("Set up growth light ON in seconds: "));
+      Serial.print(F("Growth light ON in seconds: "));
       Serial.println(secondsToNextGrowthLightSwitch);
     }
 
@@ -228,7 +229,7 @@ void setup() {
       }
       // Check if sleep light should be on
       if (getSleepLightStatus() == true) {
-        digitalWrite(PIN_LIGHT_3, LOW);
+        digitalWrite(PIN_LIGHT_3, RELAYON);
         Alarm.timerOnce(secondsToNextSleepLightSwitch, turnOffSleepLight);
       }
       else {
@@ -285,12 +286,12 @@ void loop() {
   // Exhaust fan throttle with hysteresis
   if (tempSensors.getTempC(tempSensorAirCirculation) <= minRoomTemp && !fanThrottleActive) {
     // Switch on throttle for exhaust fan -> reduce air volume
-    digitalWrite(PIN_AIR_OUTLET_THROTTLE, LOW);
+    digitalWrite(PIN_AIR_OUTLET_THROTTLE, RELAYON);
     fanThrottleActive = true;
     Serial.println(F("Turned down fan"));
   }
   else if ((tempSensors.getTempC(tempSensorAirCirculation) > (minRoomTemp + exhaustFanHysteresis)) && fanThrottleActive == true) {
-    digitalWrite(PIN_AIR_OUTLET_THROTTLE, HIGH);
+    digitalWrite(PIN_AIR_OUTLET_THROTTLE, RELAYOFF);
     fanThrottleActive = false;
     Serial.println(F("Turned up fan"));
   }
@@ -382,21 +383,21 @@ boolean getSleepLightStatus() {
 }
 
 void turnOnIrrigation() {
-  digitalWrite(PIN_PUMP_IRRIGATION, LOW);
+  digitalWrite(PIN_PUMP_IRRIGATION, RELAYON);
   Alarm.timerOnce(irrigationScheme[0], turnOffIrrigation);
   Serial.print(F("Turned on irrigation at "));
   Serial.println(now());
 }
 
 void turnOffIrrigation() {
-  digitalWrite(PIN_PUMP_IRRIGATION, HIGH);
+  digitalWrite(PIN_PUMP_IRRIGATION, RELAYOFF);
   Alarm.timerOnce(irrigationScheme[1], turnOnIrrigation);
   Serial.print(F("Turned off irrigation at "));
   Serial.println(now());
 }
 
 void turnOnGrowthLight() {
-  digitalWrite(PIN_LIGHT_1, LOW);
+  digitalWrite(PIN_LIGHT_1, RELAYON);
   Serial.print(F("Turned on growth light"));
   if (switchBloomLightInGrowthSchemeIfNotInBloom) {
     if ((storedSettings.bloomStart == 0) || (now() < storedSettings.bloomStart)) {
@@ -414,11 +415,11 @@ void turnOnGrowthLight() {
 }
 
 void turnOffGrowthLight() {
-  digitalWrite(PIN_LIGHT_1, HIGH);
+  digitalWrite(PIN_LIGHT_1, RELAYOFF);
   Serial.print(F("Turned off growth light"));
   if (switchBloomLightInGrowthSchemeIfNotInBloom) {
     if ((storedSettings.bloomStart == 0) || (now() < storedSettings.bloomStart)) {
-      digitalWrite(PIN_LIGHT_2, HIGH);
+      digitalWrite(PIN_LIGHT_2, RELAYOFF);
       Serial.print(F(" and bloom light"));
     }
   }
@@ -432,7 +433,7 @@ void turnOffGrowthLight() {
 }
 
 void turnOnBloomLight() {
-  digitalWrite(PIN_LIGHT_2, LOW);
+  digitalWrite(PIN_LIGHT_2, RELAYON);
   Serial.println(F("Turned on bloom light"));
   // calculate and set the next OFF-period
   getBloomLightStatus();
@@ -440,7 +441,7 @@ void turnOnBloomLight() {
 }
 
 void turnOffBloomLight() {
-  digitalWrite(PIN_LIGHT_2, HIGH);
+  digitalWrite(PIN_LIGHT_2, RELAYOFF);
   Serial.println(F("Turned off bloom light"));
   // calculate and set the next ON-period
   getBloomLightStatus();
@@ -449,14 +450,14 @@ void turnOffBloomLight() {
 
 void turnOnSleepLight() {
   Serial.println(F("Turned on sleep light"));
-  digitalWrite(PIN_LIGHT_3, LOW);
+  digitalWrite(PIN_LIGHT_3, RELAYON);
   getSleepLightStatus();
   Alarm.timerOnce(secondsToNextSleepLightSwitch, turnOffSleepLight);
 }
 
 void turnOffSleepLight() {
   Serial.println(F("Turned off sleep light"));
-  digitalWrite(PIN_LIGHT_3, HIGH);
+  digitalWrite(PIN_LIGHT_3, RELAYOFF);
   getSleepLightStatus();
   Alarm.timerOnce(secondsToNextSleepLightSwitch, turnOnSleepLight);
 }
