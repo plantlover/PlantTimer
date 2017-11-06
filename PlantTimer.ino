@@ -2,7 +2,7 @@
 
     Functionalities:
     Use real-time clock (DS3231) to manage lighting,
-    air and temperature of a plant growing environment
+    air flow and temperature of a plant growing environment
     with 8x relay board.
 
     Programming is done via serial commands:
@@ -26,7 +26,7 @@
     All libraries can be installed from within the
     Arduino IDE with the library manager.
 
-    Last compiled with Arduino IDE 1.6.8
+    Last compiled with Arduino IDE 1.6.9
 
     External libraries:
     - Time 1.5.0: https://github.com/PaulStoffregen/Time
@@ -49,7 +49,7 @@
 #define PIN_ONEWIRE 10            // OneWire data pin, add 4k7 pullup resistor between DATA and +5V
 #define PIN_AIR_OUTLET_THROTTLE 9 // Relay IN8: Exhaust air fan - output pin HIGH means throttle down exhaust air fan
 #define PIN_PUMP_IRRIGATION 8     // Relay IN7: Water pump (for hydro-system)
-#define PIN_PUMP_MEASUREMENT 7    // Relay IN6: Circulation pump for taking pH- and EC-measurements
+#define PIN_PUMP_AIRATION 7       // Relay IN6: Airation pump (for hydro-system)
 #define PIN_LIGHT_1 6             // Relay IN5: Grow
 #define PIN_LIGHT_2 5             // Relay IN4: Bloom
 #define PIN_LIGHT_3 4             // Relay IN3: 730 nm lights
@@ -81,8 +81,8 @@ uint8_t tempSensorElectronics[8]    = { 0x28, 0xB8, 0x75, 0xAA, 0x04, 0x00, 0x00
 // The array HAS to sum up to 24 hours, but can be of any even count / growth light periods.
 // Only two growth light periods (typically ON for 1080 minutes, OFF for 360 minutes) are
 // also possible.
-#define GROWTH_LIGHT_PERIODS 4
-int growthLightScheme[GROWTH_LIGHT_PERIODS] = { 720, 330, 60, 330 };
+#define GROWTH_LIGHT_PERIODS 2
+int growthLightScheme[GROWTH_LIGHT_PERIODS] = { 1080, 360 };
 byte currentGrowthLightPeriod;
 
 // Time of day growth light scheme should start (example: 4:20 pm)
@@ -93,7 +93,7 @@ byte growthLightStartTimeMinute = 20;
 // => 12 hours ON, 12 hours OFF, repeat
 // These numbers can be set freely, so for example a 23 hour day is possible.
 // Only ONE ON and ONE OFF period are possible (and make sense).
-int bloomLightScheme[2] = { 780, 690 };
+int bloomLightScheme[2] = { 720, 720 };
 
 // Daily reduce duration of daytime by X minutes after bloom day Y.
 // Set to 0 if unwanted.
@@ -110,13 +110,14 @@ bool switchBloomLightInGrowthSchemeIfNotInBloom = true;
 #define MAX_BLOOM_DAYS 120
 
 // Light3: 730 nm LEDs
-// First number is the on-time BEFORE bloom light turns off,
+// First number is the on-time in minutes BEFORE bloom light turns off,
 // second number is the time it stays on after
 short sleepLightScheme[2] = { 10, 15 };
 
 /* Irrigation scheme in seconds */
 // => 0.5 minutes on, 10 minutes off, repeat
-unsigned long irrigationScheme[2] = { 40, 500 };
+unsigned long irrigationScheme[2] = { 15, 1080 };
+unsigned long airationDuration = 300;
 
 // Exhaust fan temperature hysteresis
 // Turns exhaust fan to low if plant room temperature is below 23°C
@@ -148,10 +149,11 @@ storedDataObject storedSettings;
 
 // Startup routine
 void setup() {
-  // Set up output pins for relay switching
+  // Set up output pins for relay switching,
+  // turn all relays off at startup
   for (int pin=2; pin < 9; pin++) {
     pinMode(pin, OUTPUT);
-    digitalWrite(pin, HIGH);
+    digitalWrite(pin, RELAYOFF);
   }
   
   // Open serial connection
@@ -161,7 +163,8 @@ void setup() {
 
   // Set up real-time clock connection to "Time" library
   setSyncProvider(RTC.get);
-  setSyncInterval(1);
+  // Number of seconds between resyncs (fetching current time from RTC)
+  setSyncInterval(600);
 
   // Write current time into variable, because now() seems a lot of work behind the curtains
   time_t timeNow = now();
@@ -173,7 +176,7 @@ void setup() {
   if (timeStatus() == timeSet) {
     Serial.print(F("Time of startup: "));
     Serial.print(hour());
-    Serial.print(":");
+    Serial.print(F(":"));
     Serial.print(minute());
 
     Serial.print(F(" or "));
@@ -330,7 +333,7 @@ void getGrowthLightPeriod() {
 
 // Counts forward from timestamp storedSettings.bloomStart
 // Sums up all nights and days including optional day-/nighttime duration modification
-// Calculates effective bloom days (since there might have been shorter-than-24-hour days)
+// Calculates effective bloom days (since there might have been different-than-24-hour days)
 void getBloomLightStatus() {
   time_t timeNow = now();
   unsigned long sumOfBloomLightPeriods = storedSettings.bloomStart;
@@ -340,15 +343,15 @@ void getBloomLightStatus() {
     if (sumOfBloomLightPeriods <= timeNow) { // If already past now(), don't count next light period
       if (!bloomLightStatus) {
         bloomLightStatus = true;
-        if (bloomDayCounter >= startOfDaytimeReduction) {
-          sumOfBloomLightPeriods -= reductionOfDaytimeInMinutes * SECS_PER_MIN;
-        }
+//        if (bloomDayCounter >= startOfDaytimeReduction) {
+//          sumOfBloomLightPeriods -= reductionOfDaytimeInMinutes * SECS_PER_MIN;
+//        }
       }
       else {
         bloomLightStatus = false;
-        if (bloomDayCounter >= startOfDaytimeReduction) {
-          sumOfBloomLightPeriods += prolongNighttimeInMinutes * SECS_PER_MIN;
-        }
+//        if (bloomDayCounter >= startOfDaytimeReduction) {
+//          sumOfBloomLightPeriods += prolongNighttimeInMinutes * SECS_PER_MIN;
+//        }
         bloomDayCounter++;
       }
     }
@@ -393,6 +396,20 @@ void turnOffIrrigation() {
   digitalWrite(PIN_PUMP_IRRIGATION, RELAYOFF);
   Alarm.timerOnce(irrigationScheme[1], turnOnIrrigation);
   Serial.print(F("Turned off irrigation at "));
+  Serial.println(now());
+  turnOnAiration();
+}
+
+void turnOnAiration() {
+  digitalWrite(PIN_PUMP_AIRATION, RELAYON);
+  Alarm.timerOnce(airationDuration, turnOffAiration);
+  Serial.print(F("Turned on airation at "));
+  Serial.println(now());
+}
+
+void turnOffAiration() {
+  digitalWrite(PIN_PUMP_AIRATION, RELAYOFF);
+  Serial.print(F("Turned off airation at "));
   Serial.println(now());
 }
 
